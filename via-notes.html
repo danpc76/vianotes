@@ -215,6 +215,7 @@
           <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
         </button>
         <div class="mic-hint" id="micHint">Toca para comenzar a grabar</div>
+        <div id="liveTranscriptBox" style="display:none;margin-top:12px;text-align:left;background:var(--green-50);border-radius:10px;padding:10px 12px;font-size:12.5px;color:var(--text-secondary);min-height:40px;max-height:120px;overflow-y:auto;"></div>
         <div class="device-row">
           <div class="device-pill"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg><span>Micrófono del dispositivo</span></div>
         </div>
@@ -354,7 +355,7 @@
     if(!recording) startRecording(); else stopRecording();
   });
 
-  const RECOGNITION_LANGS = ['es-419', 'es-ES', 'es-US', 'es'];
+  const RECOGNITION_LANGS = ['es-ES', 'es-419', 'es-US', 'es', 'es-MX'];
   let langIndex = 0;
 
   function createRecognition(){
@@ -362,16 +363,24 @@
     r.lang = RECOGNITION_LANGS[langIndex % RECOGNITION_LANGS.length];
     r.continuous = true;
     r.interimResults = true;
-    let gotAnyResult = false;
+    r.onstart = ()=>{
+      setStatus('Escuchando (' + r.lang + ')…', true);
+    };
     r.onresult = (e)=>{
-      gotAnyResult = true;
       let finalText = '';
+      let interimText = '';
       for(let i=e.resultIndex; i<e.results.length; i++){
         if(e.results[i].isFinal) finalText += e.results[i][0].transcript + ' ';
+        else interimText += e.results[i][0].transcript;
       }
       liveTranscript += finalText;
+      const box = $('liveTranscriptBox');
+      box.style.display = 'block';
+      box.textContent = (liveTranscript + ' ' + interimText).trim() || '…';
+      box.scrollTop = box.scrollHeight;
     };
     r.onerror = (e)=>{
+      console.log('SpeechRecognition error:', e.error);
       if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
         toast('Permiso de micrófono denegado. Actívalo en los ajustes del navegador.', 4000);
         recording = false;
@@ -379,7 +388,12 @@
         toast('No se detecta micrófono en este dispositivo.', 4000);
         recording = false;
       } else if(e.error === 'language-not-supported'){
-        langIndex++; // try the next locale on the next restart
+        langIndex++;
+        toast('Probando otro idioma (' + RECOGNITION_LANGS[langIndex % RECOGNITION_LANGS.length] + ')…', 2000);
+      } else if(e.error === 'network'){
+        toast('Error de red en el reconocimiento de voz. Revisa tu conexión.', 3000);
+      } else if(e.error !== 'no-speech' && e.error !== 'aborted'){
+        toast('Error de reconocimiento: ' + e.error, 3000);
       }
     };
     r.onend = ()=>{
@@ -405,6 +419,8 @@
     liveTranscript = '';
     manualStop = false;
     langIndex = 0;
+    $('liveTranscriptBox').style.display = 'none';
+    $('liveTranscriptBox').textContent = '';
     recognition = createRecognition();
     try{
       recognition.start();
@@ -430,6 +446,7 @@
     $('micIcon').innerHTML = '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line>';
     $('micHint').textContent = 'Toca para comenzar a grabar';
     $('recordHeading').textContent = 'Nueva grabación';
+    $('liveTranscriptBox').style.display = 'none';
 
     if(recognition){ try{ recognition.stop(); }catch(e){} recognition = null; }
 
