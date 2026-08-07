@@ -253,6 +253,12 @@
       <div class="setting-row"><span>Correo</span><span style="color:var(--text-secondary)">danpc76@gmail.com</span></div>
       <div class="setting-row"><span>Idioma de transcripción</span><span style="color:var(--text-secondary)">Español (Chile)</span></div>
       <div class="setting-row"><span>Plan</span><span class="badge" style="background:var(--green-100);color:var(--green-700);">Pro</span></div>
+      <div style="margin-top:18px;">
+        <div class="field-label">Clave de API de Gemini</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Necesaria para generar el acta con IA — es gratis. Consíguela en <span style="color:var(--green-700);font-weight:600;">aistudio.google.com</span> → Get API key. Se guarda solo en este navegador.</div>
+        <input type="password" class="title-input" id="apiKeyInput" placeholder="AIza..." style="margin-bottom:8px;">
+        <button class="mic-btn" id="saveApiKeyBtn" style="width:auto;height:auto;border-radius:10px;padding:9px 16px;font-size:13px;font-weight:600;">Guardar clave</button>
+      </div>
     </section>
   </main>
 
@@ -297,17 +303,24 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // ---------- Storage ----------
+  // ---------- Storage (localStorage — works standalone, outside Claude.ai) ----------
   async function loadState(){
     try{
-      const res = await window.storage.get(STORAGE_KEY, false);
-      if(res && res.value){ state = JSON.parse(res.value); }
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw) state = JSON.parse(raw);
     }catch(e){ /* no data yet */ }
     if(!state.meetings) state.meetings = [];
   }
   async function saveState(){
-    try{ await window.storage.set(STORAGE_KEY, JSON.stringify(state), false); }
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
     catch(e){ console.error('No se pudo guardar', e); }
+  }
+
+  function getApiKey(){
+    try{ return localStorage.getItem('via-notes-api-key') || ''; }catch(e){ return ''; }
+  }
+  function setApiKey(key){
+    try{ localStorage.setItem('via-notes-api-key', key); }catch(e){}
   }
 
   // ---------- Navigation ----------
@@ -477,7 +490,12 @@
         meeting.notes = notes;
       }catch(e){
         meeting.notes = fallbackNotes();
-        toast('No se pudo generar el acta automática; se muestran datos por defecto.', 3500);
+        if(e.message === 'no-api-key'){
+          toast('Agrega tu clave de API de Gemini en Ajustes para generar el acta automáticamente.', 4500);
+        } else {
+          console.log('Error generando notas:', e.message);
+          toast('No se pudo generar el acta con IA (' + e.message.slice(0,60) + ').', 4000);
+        }
       }
     } else {
       meeting.notes = fallbackNotes();
@@ -502,19 +520,30 @@
 
   // ---------- AI note generation ----------
   async function generateNotes(transcript){
-    const system = 'Eres un asistente que redacta actas formales de reuniones en español. A partir de una transcripción, responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques de código, con exactamente estas claves: participantes (string), agenda (string), temas_tratados (string), decisiones (string), compromisos (array de strings). Si algo no se puede identificar en la transcripción, usa el texto "No identificado" para strings o un array vacío para compromisos. Sé breve y concreto, 1-3 frases por campo.';
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const apiKey = getApiKey();
+    if(!apiKey){
+      throw new Error('no-api-key');
+    }
+    const system = 'Eres un asistente que redacta actas formales de reuniones en español. A partir de una transcripción, responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown ni bloques de código, con exactamente estas claves: participantes (string), agenda (string), temas_tratados (string), decisiones (string), compromisos (array de strings). Si algo no se puede identificar en la transcripción, usa el texto "No identificado" para strings o un array vacío para compromisos. Sé breve y concreto, 1-3 frases por campo.';
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system,
-        messages: [{ role: 'user', content: 'Transcripción de la reunión:\\n\\n' + transcript.slice(0, 6000) }]
+        system_instruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: 'Transcripción de la reunión:\\n\\n' + transcript.slice(0, 6000) }] }],
+        generationConfig: { maxOutputTokens: 1000, temperature: 0.3 }
       })
     });
+    if(!response.ok){
+      const errBody = await response.text().catch(()=> '');
+      throw new Error('api-error-' + response.status + ' ' + errBody.slice(0,200));
+    }
     const data = await response.json();
-    const text = (data.content || []).map(b=>b.text||'').join('\\n');
+    const text = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || [])
+      .map(p=>p.text||'').join('\\n');
     const clean = text.replace(/```json|```/g,'').trim();
     const parsed = JSON.parse(clean);
     if(!Array.isArray(parsed.compromisos)) parsed.compromisos = [];
@@ -626,6 +655,14 @@
       <div class="stat-card"><div class="num">${withCommits}</div><div class="label">Actas con compromisos</div></div>
     `;
   }
+
+  // ---------- Settings: API key ----------
+  $('apiKeyInput').value = getApiKey();
+  $('saveApiKeyBtn').addEventListener('click', ()=>{
+    const val = $('apiKeyInput').value.trim();
+    setApiKey(val);
+    toast(val ? 'Clave guardada.' : 'Clave eliminada.', 2000);
+  });
 
   // ---------- PWA install ----------
   if('serviceWorker' in navigator){
