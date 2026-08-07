@@ -1,0 +1,15 @@
+{
+  "name": "VIA Notes",
+  "short_name": "VIA Notes",
+  "description": "Voice AI Notes — graba reuniones y genera actas con IA",
+  "start_url": "./via-notes.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#1c4d3a",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
