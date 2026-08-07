@@ -494,7 +494,8 @@
           toast('Agrega tu clave de API de Gemini en Ajustes para generar el acta automáticamente.', 4500);
         } else {
           console.log('Error generando notas:', e.message);
-          toast('No se pudo generar el acta con IA (' + e.message.slice(0,60) + ').', 4000);
+          meeting.notes.temas_tratados = 'Error IA: ' + e.message.slice(0,400);
+          toast('No se pudo generar el acta con IA. Mira el detalle en "Temas tratados".', 4000);
         }
       }
     } else {
@@ -592,6 +593,7 @@
           <div class="field-label">Compromisos</div>
           ${commitsHtml}
         </div>
+        ${meeting.transcript ? `<button class="close-btn" id="retryAiBtn" style="margin-top:14px;">Reintentar generar acta con IA</button>` : ''}
         ${meeting.transcript ? `
         <div class="transcript-toggle" id="transcriptToggle">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -607,6 +609,26 @@
     if(tt) tt.addEventListener('click', ()=>{
       tt.classList.toggle('open');
       $('transcriptBody').classList.toggle('open');
+    });
+    const retryBtn = $('retryAiBtn');
+    if(retryBtn) retryBtn.addEventListener('click', async ()=>{
+      retryBtn.textContent = 'Generando…';
+      retryBtn.disabled = true;
+      try{
+        const notes = await generateNotes(meeting.transcript);
+        meeting.notes = notes;
+        await saveState();
+        renderActa(meeting, false);
+      }catch(e){
+        if(e.message === 'no-api-key'){
+          toast('Agrega tu clave de API de Gemini en Ajustes.', 4000);
+        } else {
+          meeting.notes = fallbackNotes();
+          meeting.notes.temas_tratados = 'Error IA: ' + e.message.slice(0,400);
+          await saveState();
+          renderActa(meeting, false);
+        }
+      }
     });
     if(scrollTo) $('actaContainer').scrollIntoView({behavior:'smooth', block:'start'});
   }
