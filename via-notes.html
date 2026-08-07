@@ -215,7 +215,6 @@
           <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
         </button>
         <div class="mic-hint" id="micHint">Toca para comenzar a grabar</div>
-        <div id="liveTranscriptBox" style="display:none;margin-top:12px;text-align:left;background:var(--green-50);border-radius:10px;padding:10px 12px;font-size:12.5px;color:var(--text-secondary);min-height:40px;max-height:120px;overflow-y:auto;"></div>
         <div class="device-row">
           <div class="device-pill"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg><span>Micrófono del dispositivo</span></div>
         </div>
@@ -299,9 +298,6 @@
   let state = { meetings: [] };
 
   let recording = false;
-  let recognition = null;
-  let manualStop = false;
-  let liveTranscript = '';
   let seconds = 0;
   let timerInterval = null;
   let currentMeetingId = null;
@@ -367,85 +363,85 @@
   }
 
   // ---------- Recording ----------
-  const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-
   $('micBtn').addEventListener('click', ()=>{
     if(!recording) startRecording(); else stopRecording();
   });
 
-  const RECOGNITION_LANGS = ['es-ES', 'es-419', 'es-US', 'es', 'es-MX'];
-  let langIndex = 0;
+  let mediaStream = null;
+  let mediaRecorder = null;
+  let audioChunks = [];
 
-  function createRecognition(){
-    const r = new SpeechRecognitionAPI();
-    r.lang = RECOGNITION_LANGS[langIndex % RECOGNITION_LANGS.length];
-    r.continuous = true;
-    r.interimResults = true;
-    r.onstart = ()=>{
-      setStatus('Escuchando (' + r.lang + ')…', true);
-    };
-    r.onresult = (e)=>{
-      let finalText = '';
-      let interimText = '';
-      for(let i=e.resultIndex; i<e.results.length; i++){
-        if(e.results[i].isFinal) finalText += e.results[i][0].transcript + ' ';
-        else interimText += e.results[i][0].transcript;
+  // ---------- WAV encoding (guarantees a format Gemini always accepts) ----------
+  async function audioBlobToWavBase64(blob){
+    const arrayBuffer = await blob.arrayBuffer();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioCtx();
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    const wavBuffer = encodeWavPCM(audioBuffer);
+    audioCtx.close();
+    return arrayBufferToBase64(wavBuffer);
+  }
+  function encodeWavPCM(audioBuffer){
+    const numFrames = audioBuffer.length;
+    const sampleRate = audioBuffer.sampleRate;
+    let channelData;
+    if(audioBuffer.numberOfChannels > 1){
+      const chs = [];
+      for(let c=0;c<audioBuffer.numberOfChannels;c++) chs.push(audioBuffer.getChannelData(c));
+      channelData = new Float32Array(numFrames);
+      for(let i=0;i<numFrames;i++){
+        let sum=0;
+        for(let c=0;c<chs.length;c++) sum += chs[c][i];
+        channelData[i] = sum/chs.length;
       }
-      liveTranscript += finalText;
-      const box = $('liveTranscriptBox');
-      box.style.display = 'block';
-      box.textContent = (liveTranscript + ' ' + interimText).trim() || '…';
-      box.scrollTop = box.scrollHeight;
-    };
-    r.onerror = (e)=>{
-      console.log('SpeechRecognition error:', e.error);
-      if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
-        toast('Permiso de micrófono denegado. Actívalo en los ajustes del navegador.', 4000);
-        recording = false;
-      } else if(e.error === 'audio-capture'){
-        toast('No se detecta micrófono en este dispositivo.', 4000);
-        recording = false;
-      } else if(e.error === 'language-not-supported'){
-        langIndex++;
-        toast('Probando otro idioma (' + RECOGNITION_LANGS[langIndex % RECOGNITION_LANGS.length] + ')…', 2000);
-      } else if(e.error === 'network'){
-        toast('Error de red en el reconocimiento de voz. Revisa tu conexión.', 3000);
-      } else if(e.error !== 'no-speech' && e.error !== 'aborted'){
-        toast('Error de reconocimiento: ' + e.error, 3000);
-      }
-    };
-    r.onend = ()=>{
-      if(recording && !manualStop){
-        setTimeout(()=>{
-          if(recording && !manualStop){
-            recognition = createRecognition();
-            try{ recognition.start(); }catch(e){
-              setTimeout(()=>{ if(recording && !manualStop){ try{ recognition.start(); }catch(e2){} } }, 500);
-            }
-          }
-        }, 300);
-      }
-    };
-    return r;
+    } else {
+      channelData = audioBuffer.getChannelData(0);
+    }
+    const bytesPerSample = 2, blockAlign = bytesPerSample, byteRate = sampleRate*blockAlign;
+    const dataSize = numFrames*blockAlign;
+    const buffer = new ArrayBuffer(44+dataSize);
+    const view = new DataView(buffer);
+    function writeStr(offset, str){ for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i)); }
+    writeStr(0,'RIFF'); view.setUint32(4, 36+dataSize, true); writeStr(8,'WAVE');
+    writeStr(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true);
+    view.setUint16(22,1,true); view.setUint32(24,sampleRate,true);
+    view.setUint32(28,byteRate,true); view.setUint16(32,blockAlign,true); view.setUint16(34,16,true);
+    writeStr(36,'data'); view.setUint32(40,dataSize,true);
+    let offset = 44;
+    for(let i=0;i<numFrames;i++){
+      const s = Math.max(-1, Math.min(1, channelData[i]));
+      view.setInt16(offset, s<0 ? s*0x8000 : s*0x7FFF, true);
+      offset += 2;
+    }
+    return buffer;
+  }
+  function arrayBufferToBase64(buffer){
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for(let i=0;i<bytes.length;i+=chunkSize){
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunkSize));
+    }
+    return btoa(binary);
   }
 
   async function startRecording(){
-    if(!SpeechRecognitionAPI){
-      toast('Este navegador no soporta transcripción por voz. Prueba con Chrome.', 4000);
-      return;
-    }
-    liveTranscript = '';
-    manualStop = false;
-    langIndex = 0;
-    $('liveTranscriptBox').style.display = 'none';
-    $('liveTranscriptBox').textContent = '';
-    recognition = createRecognition();
     try{
-      recognition.start();
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     }catch(err){
       toast('No se pudo acceder al micrófono. Revisa los permisos del navegador.', 4000);
       return;
     }
+    audioChunks = [];
+    try{
+      mediaRecorder = new MediaRecorder(mediaStream);
+    }catch(err){
+      toast('La grabación de audio no es compatible con este navegador.', 4000);
+      mediaStream.getTracks().forEach(t=>t.stop());
+      return;
+    }
+    mediaRecorder.ondataavailable = (e)=>{ if(e.data.size>0) audioChunks.push(e.data); };
+    mediaRecorder.start();
 
     recording = true;
     $('micBtn').classList.add('rec');
@@ -458,58 +454,64 @@
 
   async function stopRecording(){
     recording = false;
-    manualStop = true;
     stopTimer();
     $('micBtn').classList.remove('rec');
     $('micIcon').innerHTML = '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line>';
     $('micHint').textContent = 'Toca para comenzar a grabar';
     $('recordHeading').textContent = 'Nueva grabación';
-    $('liveTranscriptBox').style.display = 'none';
 
-    if(recognition){ try{ recognition.stop(); }catch(e){} recognition = null; }
+    if(!mediaRecorder){ setStatus('Listo para grabar', false); return; }
+
+    const durationSec = seconds;
+    const title = $('meetingTitle').value.trim() || 'Nueva reunión';
+    $('meetingTitle').value = '';
 
     setStatus('Procesando…', false);
-    const title = $('meetingTitle').value.trim() || 'Nueva reunión';
-    const durationSec = seconds;
-    const transcript = liveTranscript.trim();
+    $('processingBlock').style.display = 'flex';
+    $('processingText').textContent = 'Transcribiendo y generando acta…';
+
+    const blob = await new Promise((resolve)=>{
+      mediaRecorder.onstop = ()=> resolve(new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' }));
+      mediaRecorder.stop();
+    });
+    if(mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
+    mediaRecorder = null;
 
     const meeting = {
       id: 'm_' + Date.now(),
       title, durationSec,
       date: new Date().toISOString(),
-      transcript,
+      transcript: '',
       notes: null
     };
+
+    try{
+      const wavBase64 = await audioBlobToWavBase64(blob);
+      const result = await generateNotesFromAudio(wavBase64, 'audio/wav');
+      meeting.transcript = result.transcripcion || '';
+      meeting.notes = {
+        participantes: result.participantes,
+        agenda: result.agenda,
+        temas_tratados: result.temas_tratados,
+        decisiones: result.decisiones,
+        compromisos: result.compromisos || []
+      };
+    }catch(e){
+      meeting.notes = fallbackNotes();
+      if(e.message === 'no-api-key'){
+        toast('Agrega tu clave de API de Gemini en Ajustes para generar el acta automáticamente.', 4500);
+      } else {
+        console.log('Error generando notas:', e.message);
+        meeting.notes.temas_tratados = 'Error IA: ' + e.message.slice(0,400);
+        toast('No se pudo generar el acta con IA. Mira el detalle en "Temas tratados".', 4000);
+      }
+    }
+
     state.meetings.unshift(meeting);
     currentMeetingId = meeting.id;
     await saveState();
 
-    renderActa(meeting, true);
-    $('meetingTitle').value = '';
-
-    if(transcript){
-      $('processingBlock').style.display = 'flex';
-      $('processingText').textContent = 'Generando acta con IA…';
-      try{
-        const notes = await generateNotes(transcript);
-        meeting.notes = notes;
-      }catch(e){
-        meeting.notes = fallbackNotes();
-        if(e.message === 'no-api-key'){
-          toast('Agrega tu clave de API de Gemini en Ajustes para generar el acta automáticamente.', 4500);
-        } else {
-          console.log('Error generando notas:', e.message);
-          meeting.notes.temas_tratados = 'Error IA: ' + e.message.slice(0,400);
-          toast('No se pudo generar el acta con IA. Mira el detalle en "Temas tratados".', 4000);
-        }
-      }
-    } else {
-      meeting.notes = fallbackNotes();
-      toast(SpeechRecognitionAPI ? 'No se detectó voz durante la grabación.' : 'Este navegador no soporta transcripción en vivo. Prueba Chrome.', 4000);
-    }
-
     $('processingBlock').style.display = 'none';
-    await saveState();
     renderActa(meeting, true);
     setStatus('Listo para grabar', false);
   }
@@ -877,8 +879,8 @@
     await loadState();
     renderLibrary();
     renderStats();
-    if(!SpeechRecognitionAPI){
-      $('micHint').textContent = 'Toca para grabar (transcripción no disponible en este navegador)';
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      $('micHint').textContent = 'Este navegador no soporta grabación de audio.';
     }
   })();
 
