@@ -535,7 +535,12 @@
       body: JSON.stringify({
         system_instruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: 'Transcripción de la reunión:\\n\\n' + transcript.slice(0, 6000) }] }],
-        generationConfig: { maxOutputTokens: 1000, temperature: 0.3 }
+        generationConfig: {
+          maxOutputTokens: 2048,
+          temperature: 0.3,
+          responseMimeType: 'application/json',
+          thinkingConfig: { thinkingBudget: 0 }
+        }
       })
     });
     if(!response.ok){
@@ -545,8 +550,18 @@
     const data = await response.json();
     const text = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || [])
       .map(p=>p.text||'').join('\\n');
-    const clean = text.replace(/```json|```/g,'').trim();
-    const parsed = JSON.parse(clean);
+    let clean = text.replace(/```json|```/g,'').trim();
+    const firstBrace = clean.indexOf('{');
+    const lastBrace = clean.lastIndexOf('}');
+    if(firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace){
+      clean = clean.slice(firstBrace, lastBrace + 1);
+    }
+    let parsed;
+    try{
+      parsed = JSON.parse(clean);
+    }catch(parseErr){
+      throw new Error('json-parse-failed: ' + text.slice(0,300));
+    }
     if(!Array.isArray(parsed.compromisos)) parsed.compromisos = [];
     return parsed;
   }
